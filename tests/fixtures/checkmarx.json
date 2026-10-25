@@ -1,0 +1,19 @@
+{
+  "totalCount": 1,
+  "results": [{
+    "type": "sast",
+    "id": "cx-123",
+    "similarityId": "-1592271049",
+    "severity": "HIGH",
+    "description": "The application's find_user method executes an SQL query built from untrusted input name.",
+    "data": {
+      "queryId": 5157925289005576664,
+      "queryName": "SQL_Injection",
+      "nodes": [
+        {"fileName": "/app/db.py", "line": 4, "name": "name"},
+        {"fileName": "/app/db.py", "line": 6, "name": "execute"}
+      ]
+    },
+    "vulnerabilityDetails": {"cweId": 89}
+  }]
+}
