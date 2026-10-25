@@ -67,3 +67,29 @@ def test_remediate_produces_and_writes_diff(tmp_path):
     assert result.fixed
     assert "+    cur.execute(\"SELECT * FROM users WHERE name = ?\", (name,))" in result.diff
     assert "(name,)" in (repo / "app/db.py").read_text()
+
+
+def test_signature_detects_tampering():
+    from remify import integrity
+
+    key = b"secret"
+    record = integrity.sign("abc123", "--- a\n+++ b\n+fix\n", key)
+    assert integrity.verify(record, "--- a\n+++ b\n+fix\n", key)
+    assert not integrity.verify(record, "--- a\n+++ b\n+backdoor\n", key)
+    assert not integrity.verify(record, "--- a\n+++ b\n+fix\n", b"other-key")
+
+
+def test_deployment_modes(monkeypatch):
+    from remify import deploy
+
+    monkeypatch.setenv("REMIFY_AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "x")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "y")
+    d = deploy.from_env("bedrock")
+    assert d.model == "anthropic.claude-opus-5-5"
+    assert not d.supports_fallbacks
+    monkeypatch.delenv("REMIFY_GCP_PROJECT", raising=False)
+    with pytest.raises(ValueError):
+        deploy.from_env("vertex")
+    with pytest.raises(ValueError):
+        deploy.from_env("on-prem-magic")

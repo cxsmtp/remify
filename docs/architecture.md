@@ -1,72 +1,57 @@
-# Remify architecture and deployment
+# Remify architecture
 
-Origin: voice memo "AI Triage and Remediation Ideas", 25 Oct 2026. The idea:
-take what Checkmarx does for triage and remediation, make it work for **every**
-security tool, make it understand context so it actually fixes the problem, and
-run it either in our cloud or in the customer's environment, while protecting it.
+Source: voice memo "AI Triage and Remediation Ideas", Sun 25 Oct 2026,
+09:15–09:16 (Asia/Dubai).
 
-## 1. Tool agnosticism
+## Core thesis
 
-- One internal model (`Finding`): tool, rule, CWE, severity, location, message.
-- SARIF 2.1.0 is the default import format; most modern scanners export it.
-- Vendor-specific adapters only where SARIF loses information (e.g. Checkmarx
-  data-flow nodes, so we fix at the sink).
-- Cross-tool fingerprinting (path + line + CWE) lets agreement between tools
-  raise confidence and stops the same issue being fixed twice.
+A universal **Read & Remediation** engine that goes beyond any single tool
+such as Checkmarx: a tool-agnostic, AI-driven layer that understands the
+context of each vulnerability and **solves** it, instead of flagging it for
+manual review.
 
-**Scaling risk:** deep context differs per tool and per category (SAST vs SCA vs
-IaC vs secrets). Keep the core category-aware rather than tool-aware: one
-remediation strategy per *category*, many thin adapters per *tool*.
+## System architecture
 
-## 2. Contextual remediation
+```
+Security tool inputs ──► Contextual intelligence layer ──► Automated remediation ──┬─► SaaS (proprietary cloud)
+ SARIF, Checkmarx, …      normalize · dedupe · context      plan · edit · verify   └─► Customer-managed environment
+```
 
-1. Build context: the file, a window around the finding, and later the call
-   graph, framework and dependency versions.
-2. Ask the model for a structured plan: verdict (`true_positive` /
-   `false_positive` / `needs_human`), confidence, explanation, exact edits.
-3. Verify deterministically: edits must apply exactly once. Next steps: re-run
-   the scanner on the patched file, then the project's tests.
-4. Only verified fixes are emitted; everything else goes back as a triage note.
-
-The "definitive" part comes from step 3, not from the model: a fix is only
-shipped once the tooling has shown it applies cleanly, clears the finding and
-keeps the tests green.
-
-## 3. Deployment models
-
-| | SaaS (Remify cloud) | Customer-managed |
+| Stage | Code | Responsibility |
 |---|---|---|
-| Code leaves customer | Yes (snippets + finding) | No |
-| Model access | Our Anthropic account | Customer's Claude API account, Amazon Bedrock, Google Vertex AI or Microsoft Foundry |
-| Our IP exposure | None, logic stays on our servers | High, the main risk |
-| Best for | SMB, fast onboarding | Regulated / air-gapped-ish enterprises |
+| Security tool inputs | `src/remify/ingest/` | One adapter per format → common `Finding` (`models.py`) |
+| Contextual intelligence layer | `triage.py`, `context.py` | Cross-tool dedupe and ranking. Code context around each finding. |
+| Automated remediation | `remediate/engine.py` | Claude returns a verdict, confidence and exact edits. Edits are applied and checked; only clean fixes are emitted. |
+| Deployment | `deploy.py` | `saas` (Remify's Claude account) or customer-managed `bedrock` / `vertex` / `foundry` |
+| Output integrity | `integrity.py`, `remify verify` | Signed fixes; CI rejects anything altered |
 
-The `Remediator` protocol is the seam: SaaS uses `ClaudeRemediator` directly;
-customer-managed swaps in a client for the customer's model endpoint.
+## Supporting logic → implementation
 
-## 4. Protecting IP in customer-managed deployments
+- **Tool agnosticism:** SARIF covers most scanners. Vendor adapters only where
+  SARIF loses information (Checkmarx data-flow sink). See
+  [research/integration-frameworks.md](research/integration-frameworks.md).
+- **Contextual remediation:** the model sees the whole file plus a focused
+  window. It may answer `false_positive` or `needs_human`. "Definitive" comes
+  from deterministic checks: exact unique edits now; re-scan and tests next.
+- **Flexible deployment:** the same container image runs in every mode,
+  selected by `REMIFY_DEPLOYMENT`. In the customer-managed modes, code only
+  goes to the customer's own model endpoint.
 
-Ordered from strongest to weakest:
+## Blind spots & strategic risks
 
-1. **Split architecture (recommended):** the customer runs only a thin *agent*
-   (ingest, context building, patch application, verification). The prompt
-   library, ranking logic and remediation strategies stay in a Remify control
-   plane. Only the minimal code snippet crosses the boundary, under the
-   customer's data controls. Most of the value never ships to the customer.
-2. **Confidential computing:** run the engine inside attested enclaves
-   (AWS Nitro Enclaves, Azure / GCP Confidential VMs). Neither the customer nor
-   us can read memory; our image only gets its decryption key after remote attestation.
-3. **Signed, licensed containers:** hardened images, license-key checks with
-   periodic call-home, prompts/strategies encrypted at rest and decrypted only
-   in memory. This deters casual copying but won't stop a determined insider.
-4. **Contractual:** EULA terms against reverse engineering, plus audit rights.
+| Risk | Mitigation | Status |
+|---|---|---|
+| **IP protection** in customer infrastructure | Split plane: strategy library stays in Remify cloud. Enclaves for the strictest tier. | Evaluated in [research/customer-cloud-data-protection.md](research/customer-cloud-data-protection.md) |
+| **Customer-side security / output integrity** | Every fix signed (finding + diff hash + engine version), checked by `remify verify` | HMAC implemented; Ed25519 + KMS planned |
+| **Integration scalability** | Core is category-aware, not tool-aware; thin adapters; standard formats | SARIF + Checkmarx done; CycloneDX next |
 
-Integrity of output (so customers can trust the fix): sign each remediation
-result (finding hash + diff hash + engine version) so it can be verified in
-CI before merge.
+## Action items
 
-## 5. Open questions
+- [ ] Evaluate customer-cloud data protection models (@me · **high**) → first pass done, see research doc
+- [ ] Research security tool integration frameworks (@me · **medium**) → first pass done, see research doc
+
+## Open questions
 
 - Pricing: per repo, per fixed finding, or per seat?
-- Which second tool to support after Checkmarx (Snyk vs Semgrep vs CodeQL)?
-- Minimum verification bar before auto-opening a PR vs. suggesting only.
+- Which tool to support after Checkmarx: Snyk, Semgrep or CodeQL?
+- Minimum verification bar before auto-opening a PR vs. only suggesting.

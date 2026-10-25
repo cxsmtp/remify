@@ -34,7 +34,21 @@ remify fix semgrep.sarif checkmarx.json --repo . --min-severity high
 
 # ...and apply them to the working tree
 remify fix semgrep.sarif --repo . --write
+
+# Customer-managed: run on the customer's own Claude endpoint
+REMIFY_AWS_REGION=us-east-1 remify fix semgrep.sarif --deployment bedrock
+
+# Sign fixes, then verify them in CI before merge
+REMIFY_SIGNING_KEY=... remify fix semgrep.sarif --out fixes.json
+REMIFY_SIGNING_KEY=... remify verify fixes.json
 ```
+
+| Deployment | Selected by | Required env |
+|---|---|---|
+| `saas` (default) | `--deployment saas` | `ANTHROPIC_API_KEY` or `ant auth login` |
+| `bedrock` | `--deployment bedrock` | `REMIFY_AWS_REGION` + AWS credentials |
+| `vertex` | `--deployment vertex` | `REMIFY_GCP_PROJECT`, optional `REMIFY_GCP_REGION` + gcloud ADC |
+| `foundry` | `--deployment foundry` | `REMIFY_FOUNDRY_RESOURCE`, `REMIFY_FOUNDRY_API_KEY` |
 
 ## How it works
 
@@ -45,8 +59,10 @@ remify fix semgrep.sarif --repo . --write
 | Context | `remify/context.py` | Loads the file and a numbered window around the finding; refuses paths that escape the repo. |
 | Remediate | `remify/remediate/` | Claude returns a structured plan (verdict, confidence, explanation, exact search/replace edits). Edits are applied locally and must match exactly once, so only fixes that apply cleanly are emitted as a diff. |
 
-The model backend is behind a `Remediator` protocol, so it can be swapped for a
-self-hosted deployment (see [docs/architecture.md](docs/architecture.md)).
+Design and research docs:
+- [docs/architecture.md](docs/architecture.md): thesis, architecture, risks
+- [docs/research/customer-cloud-data-protection.md](docs/research/customer-cloud-data-protection.md): IP protection and output integrity options (high priority)
+- [docs/research/integration-frameworks.md](docs/research/integration-frameworks.md): SARIF, CycloneDX/VEX, OSV, DefectDojo (medium priority)
 
 ## Roadmap
 
@@ -54,7 +70,7 @@ self-hosted deployment (see [docs/architecture.md](docs/architecture.md)).
 2. Verification loop: re-run the original scanner and the project's tests on the patched tree.
 3. SCA/container remediation (version bumps, base-image upgrades).
 4. GitHub/GitLab app that opens fix PRs automatically.
-5. Customer-managed deployment with protected remediation logic (see the design doc).
+5. Split-plane agent for customer-managed deployments; Ed25519/KMS signing.
 
 ## Development
 

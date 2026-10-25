@@ -53,7 +53,13 @@ class ClaudeRemediator:
     """Default model backend. Credentials come from the environment
     (ANTHROPIC_API_KEY or an `ant auth login` profile)."""
 
-    def __init__(self, model: str = "claude-opus-5-5", effort: str = "high", client=None):
+    def __init__(
+        self,
+        model: str = "claude-opus-5-5",
+        effort: str = "high",
+        client=None,
+        use_fallbacks: bool = True,
+    ):
         if client is None:
             import anthropic
 
@@ -61,6 +67,16 @@ class ClaudeRemediator:
         self.client = client
         self.model = model
         self.effort = effort
+        self.use_fallbacks = use_fallbacks
+
+    @classmethod
+    def from_deployment(cls, deployment, effort: str = "high") -> "ClaudeRemediator":
+        return cls(
+            model=deployment.model,
+            effort=effort,
+            client=deployment.client,
+            use_fallbacks=deployment.supports_fallbacks,
+        )
 
     def plan(self, finding: Finding, ctx: CodeContext) -> RemediationPlan:
         prompt = (
@@ -71,16 +87,18 @@ class ClaudeRemediator:
             f"<file path=\"{ctx.path}\" language=\"{ctx.language}\">\n{ctx.file_text}\n</file>\n\n"
             f"<focus>\n{ctx.window}\n</focus>"
         )
+        extra = {}
+        if self.use_fallbacks:
+            # Re-route automatically if a safety classifier declines security content.
+            extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
         response = self.client.beta.messages.parse(
             model=self.model,
             max_tokens=16000,
             system=SYSTEM_PROMPT,
             output_config={"effort": self.effort},
-            # Re-route automatically if a safety classifier declines security content.
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
             messages=[{"role": "user", "content": prompt}],
             output_format=RemediationPlan,
+            **extra,
         )
         if response.stop_reason == "refusal" or response.parsed_output is None:
             return RemediationPlan(
