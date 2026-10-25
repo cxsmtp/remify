@@ -1,0 +1,4 @@
+node_modules/
+remify.config.json
+.env
+findings*.json
