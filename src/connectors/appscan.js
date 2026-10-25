@@ -1,14 +1,7 @@
-/**
- * HCL AppScan on Cloud / AppScan 360 (SAST, DAST, SCA, IAST), API v4.
- *
- *   POST /api/v4/Account/ApiKeyLogin         { KeyId, KeySecret } → Token
- *   GET  /api/v4/Apps                        OData $top/$skip, { Items, Count }
- *   GET  /api/v4/Issues/Application/{id}     every issue of one application
- */
-
 import { Connector } from '../connector.js';
 import { request } from '../http.js';
 import { makeFinding } from '../finding.js';
+import { countedPages } from '../pool.js';
 
 const PAGE = 500;
 
@@ -45,35 +38,33 @@ export class AppScanConnector extends Connector {
   static label = 'AppScan';
   static required = ['keyId', 'keySecret'];
 
-  #token = null;
-  #expiresAt = 0;
-
   get base() {
     return String(this.config.url || 'https://cloud.appscan.com').replace(/\/+$/, '');
   }
 
   async authHeaders() {
-    if (!this.#token || Date.now() >= this.#expiresAt) {
+    const token = await this.token(async () => {
       const answer = await request(this.label, `${this.base}/api/v4/Account/ApiKeyLogin`, {
         method: 'POST',
         body: { KeyId: this.config.keyId, KeySecret: this.config.keySecret },
         fetchImpl: this.fetchImpl,
       });
       if (!answer?.Token) throw new Error('AppScan gave no token for this API key.');
-      this.#token = answer.Token;
       const expires = Date.parse(answer.Expire ?? '');
-      this.#expiresAt = Number.isFinite(expires) ? expires - 60_000 : Date.now() + 30 * 60_000;
-    }
-    return { Authorization: `Bearer ${this.#token}` };
+      return { value: answer.Token, expiresInMs: Number.isFinite(expires) ? expires - Date.now() : 30 * 60_000 };
+    });
+    return { Authorization: `Bearer ${token}` };
   }
 
-  async *items(url, query = {}) {
-    for (let skip = 0; ; skip += PAGE) {
-      const page = await this.call(url, { query: { ...query, $top: PAGE, $skip: skip, $count: true } });
-      const items = page?.Items ?? (Array.isArray(page) ? page : []);
-      yield* items;
-      if (items.length < PAGE || skip + items.length >= Number(page?.Count ?? Infinity)) return;
-    }
+  /** Every item of an OData collection: the first page gives Count, the rest are read at once. */
+  items(url, query = {}) {
+    return countedPages(
+      async (skip) => {
+        const page = await this.call(url, { query: { ...query, $top: PAGE, $skip: skip, $count: true } });
+        return { rows: page?.Items ?? (Array.isArray(page) ? page : []), total: page?.Count };
+      },
+      { pageSize: PAGE, limit: this.concurrency },
+    );
   }
 
   async check() {
@@ -81,16 +72,20 @@ export class AppScanConnector extends Connector {
     return `${page?.Count ?? page?.Items?.length ?? 0} applications`;
   }
 
-  async *findings() {
+  /** One unit per application, several read at once. */
+  async units() {
     const wanted = new Set([].concat(this.config.applications ?? []));
-    const filter = this.config.includeFixed ? undefined : "Status ne 'Fixed'";
-    let count = 0;
+    const units = [];
     for await (const app of this.items(`${this.base}/api/v4/Apps`)) {
-      if (wanted.size && !wanted.has(app.Name) && !wanted.has(app.Id)) continue;
-      for await (const issue of this.items(`${this.base}/api/v4/Issues/Application/${encodeURIComponent(app.Id)}`, filter ? { $filter: filter } : {})) {
-        yield toFinding(issue, { app });
-        if (++count >= this.maxFindings) return;
-      }
+      if (!wanted.size || wanted.has(app.Name) || wanted.has(app.Id)) units.push({ key: app.Id, app });
+    }
+    return units;
+  }
+
+  async *unitFindings({ app }) {
+    const filter = this.config.includeFixed ? undefined : "Status ne 'Fixed'";
+    for await (const issue of this.items(`${this.base}/api/v4/Issues/Application/${encodeURIComponent(app.Id)}`, filter ? { $filter: filter } : {})) {
+      yield toFinding(issue, { app });
     }
   }
 }

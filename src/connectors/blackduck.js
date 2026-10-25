@@ -1,17 +1,7 @@
-/**
- * Black Duck (SCA): vulnerable components of every project version's BOM.
- *
- *   POST /api/tokens/authenticate            `Authorization: token <API token>` → bearerToken
- *   GET  /api/projects                       offset/limit, { items, totalCount }
- *   GET  {project}/versions                  each version (or only the newest, latestVersionOnly)
- *   GET  {version}/vulnerable-bom-components one row per component × vulnerability
- *
- * Links between resources come from each item's `_meta.href`, as Black Duck intends.
- */
-
 import { Connector } from '../connector.js';
 import { request } from '../http.js';
 import { makeFinding, normalizeSeverity, severityFromScore } from '../finding.js';
+import { countedPages, mapPool } from '../pool.js';
 
 const PAGE = 100;
 const BOM_ACCEPT = 'application/vnd.blackducksoftware.bill-of-materials-6+json';
@@ -53,34 +43,32 @@ export class BlackDuckConnector extends Connector {
   static label = 'Black Duck';
   static required = ['url', 'token'];
 
-  #bearer = null;
-  #expiresAt = 0;
-
   get base() {
     return String(this.config.url).replace(/\/+$/, '');
   }
 
   async authHeaders() {
-    if (!this.#bearer || Date.now() >= this.#expiresAt) {
+    const bearer = await this.token(async () => {
       const answer = await request(this.label, `${this.base}/api/tokens/authenticate`, {
         method: 'POST',
         headers: { Authorization: `token ${this.config.token}`, Accept: 'application/vnd.blackducksoftware.user-4+json' },
         fetchImpl: this.fetchImpl,
       });
       if (!answer?.bearerToken) throw new Error('Black Duck gave no bearer token for this API token.');
-      this.#bearer = answer.bearerToken;
-      this.#expiresAt = Date.now() + Number(answer.expiresInMilliseconds ?? 3_600_000) - 60_000;
-    }
-    return { Authorization: `Bearer ${this.#bearer}` };
+      return { value: answer.bearerToken, expiresInMs: Number(answer.expiresInMilliseconds ?? 3_600_000) };
+    });
+    return { Authorization: `Bearer ${bearer}` };
   }
 
-  async *items(url, accept) {
-    for (let offset = 0; ; offset += PAGE) {
-      const page = await this.call(url, { query: { offset, limit: PAGE }, headers: accept ? { Accept: accept } : {} });
-      const items = page?.items ?? [];
-      yield* items;
-      if (items.length < PAGE || offset + items.length >= Number(page?.totalCount ?? Infinity)) return;
-    }
+  /** Every item of a collection: the first page gives totalCount, the rest are read at once. */
+  items(url, accept) {
+    return countedPages(
+      async (offset) => {
+        const page = await this.call(url, { query: { offset, limit: PAGE }, headers: accept ? { Accept: accept } : {} });
+        return { rows: page?.items ?? [], total: page?.totalCount };
+      },
+      { pageSize: PAGE, limit: this.concurrency },
+    );
   }
 
   async check() {
@@ -88,20 +76,25 @@ export class BlackDuckConnector extends Connector {
     return `${page?.totalCount ?? 0} projects`;
   }
 
-  async *findings() {
+  /** One unit per project version, its projects' versions listed at once. */
+  async units() {
     const wanted = new Set([].concat(this.config.projects ?? []));
-    let count = 0;
+    const projects = [];
     for await (const project of this.items(`${this.base}/api/projects`)) {
-      if (wanted.size && !wanted.has(project.name)) continue;
+      if (!wanted.size || wanted.has(project.name)) projects.push(project);
+    }
+    const perProject = await mapPool(projects, this.concurrency, async (project) => {
       const versions = [];
       for await (const version of this.items(`${project._meta.href}/versions`)) versions.push(version);
       if (this.config.latestVersionOnly) versions.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).splice(1);
-      for (const version of versions) {
-        for await (const row of this.items(`${version._meta.href}/vulnerable-bom-components`, BOM_ACCEPT)) {
-          yield toFinding(row, { project, version });
-          if (++count >= this.maxFindings) return;
-        }
-      }
+      return versions.map((version) => ({ key: version._meta.href, project, version }));
+    });
+    return perProject.flat();
+  }
+
+  async *unitFindings({ project, version }) {
+    for await (const row of this.items(`${version._meta.href}/vulnerable-bom-components`, BOM_ACCEPT)) {
+      yield toFinding(row, { project, version });
     }
   }
 }

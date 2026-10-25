@@ -1,12 +1,3 @@
-/**
- * The one shape every engine's findings are turned into.
- *
- * Each connector maps its vendor's rows onto `makeFinding`, so the layers
- * above (merging, the AI that makes sense of a finding, and the actions)
- * never see a vendor format. The vendor's own row is kept as `raw` for the
- * context step, which may need a field this shape does not name.
- */
-
 /** What kind of gap a finding is, whichever engine found it. */
 export const KINDS = ['sast', 'sca', 'dast', 'iac', 'container', 'secret', 'cloud', 'other'];
 

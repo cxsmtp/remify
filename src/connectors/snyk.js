@@ -1,15 +1,3 @@
-/**
- * Snyk: Open Source (SCA), Code (SAST), Container and IaC issues, through the
- * REST API's org-wide issues list.
- *
- *   GET /rest/self                           proves the token
- *   GET /rest/orgs                           every org the token sees (when none is configured)
- *   GET /rest/orgs/{orgId}/issues            JSON:API, cursor pages through links.next
- *
- * Token: a Snyk API token or service-account token, sent as `Authorization: token …`.
- * Region: us (api.snyk.io), eu (api.eu.snyk.io), au (api.au.snyk.io), or apiUrl.
- */
-
 import { Connector } from '../connector.js';
 import { makeFinding } from '../finding.js';
 
@@ -108,13 +96,14 @@ export class SnykConnector extends Connector {
     }
   }
 
-  async *findings() {
-    let count = 0;
-    for (const orgId of await this.orgIds()) {
-      for await (const issue of this.pages(`${this.base}/rest/orgs/${encodeURIComponent(orgId)}/issues`)) {
-        yield toFinding(issue, { orgId });
-        if (++count >= this.maxFindings) return;
-      }
+  /** One unit per org, read at once; an org's issues are one cursor walk. */
+  async units() {
+    return (await this.orgIds()).map((orgId) => ({ key: orgId, orgId }));
+  }
+
+  async *unitFindings({ orgId }) {
+    for await (const issue of this.pages(`${this.base}/rest/orgs/${encodeURIComponent(orgId)}/issues`)) {
+      yield toFinding(issue, { orgId });
     }
   }
 }

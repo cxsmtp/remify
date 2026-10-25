@@ -1,14 +1,3 @@
-/**
- * Wiz (cloud, containers, hosts): vulnerability findings and issues, GraphQL.
- *
- *   POST https://auth.app.wiz.io/oauth/token client credentials, audience wiz-api
- *   POST {apiUrl}                            the tenant's endpoint, e.g. https://api.us17.app.wiz.io/graphql
- *     vulnerabilityFindings                  CVEs on images, hosts and serverless, with the fixed version
- *     issuesV2                               toxic combinations and misconfigurations, with the rule's fix
- *
- * Both are cursor pages (pageInfo.endCursor). Only open ones are read unless includeResolved.
- */
-
 import { Connector } from '../connector.js';
 import { request } from '../http.js';
 import { makeFinding } from '../finding.js';
@@ -93,11 +82,8 @@ export class WizConnector extends Connector {
   static label = 'Wiz';
   static required = ['clientId', 'clientSecret', 'apiUrl'];
 
-  #token = null;
-  #expiresAt = 0;
-
   async authHeaders() {
-    if (!this.#token || Date.now() >= this.#expiresAt) {
+    const token = await this.token(async () => {
       const answer = await request(this.label, this.config.authUrl || 'https://auth.app.wiz.io/oauth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -105,10 +91,9 @@ export class WizConnector extends Connector {
         fetchImpl: this.fetchImpl,
       });
       if (!answer?.access_token) throw new Error('Wiz gave no access token for this service account.');
-      this.#token = answer.access_token;
-      this.#expiresAt = Date.now() + Number(answer.expires_in ?? 3600) * 1000 - 60_000;
-    }
-    return { Authorization: `Bearer ${this.#token}` };
+      return { value: answer.access_token, expiresInMs: Number(answer.expires_in ?? 3600) * 1000 };
+    });
+    return { Authorization: `Bearer ${token}` };
   }
 
   async graphql(query, variables) {
@@ -133,16 +118,17 @@ export class WizConnector extends Connector {
     return `connected, issues readable${data.issuesV2 ? '' : ' (empty)'}`;
   }
 
-  async *findings() {
+  /** Vulnerability findings and issues are two units, read at once. */
+  async units() {
+    return [{ key: 'vulnerabilityFindings' }, { key: 'issuesV2' }];
+  }
+
+  async *unitFindings({ key }) {
     const all = Boolean(this.config.includeResolved);
-    let count = 0;
-    for await (const node of this.connection('vulnerabilityFindings', VULNERABILITIES_QUERY, all ? {} : { status: ['OPEN'] })) {
-      yield vulnerabilityToFinding(node);
-      if (++count >= this.maxFindings) return;
-    }
-    for await (const node of this.connection('issuesV2', ISSUES_QUERY, all ? {} : { status: ['OPEN', 'IN_PROGRESS'] })) {
-      yield issueToFinding(node);
-      if (++count >= this.maxFindings) return;
+    if (key === 'vulnerabilityFindings') {
+      for await (const node of this.connection(key, VULNERABILITIES_QUERY, all ? {} : { status: ['OPEN'] })) yield vulnerabilityToFinding(node);
+    } else {
+      for await (const node of this.connection(key, ISSUES_QUERY, all ? {} : { status: ['OPEN', 'IN_PROGRESS'] })) yield issueToFinding(node);
     }
   }
 }

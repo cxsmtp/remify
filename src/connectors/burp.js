@@ -1,12 +1,3 @@
-/**
- * Burp Suite DAST / Enterprise Edition (DAST): issues of each site's latest
- * succeeded scan, GraphQL API.
- *
- *   POST {url}/graphql/v1                    `Authorization: <API key>`
- *     scans(scan_status: [succeeded])        newest first; the first per site is kept
- *     scan(id) { issues(start, count) }      each issue with its type's description and fix
- */
-
 import { Connector } from '../connector.js';
 import { makeFinding, parseCwe } from '../finding.js';
 
@@ -85,17 +76,16 @@ export class BurpConnector extends Connector {
     return scans.length ? `latest scan: ${scans[0].site_name}` : 'connected, no succeeded scans yet';
   }
 
-  async *findings() {
-    let count = 0;
-    for (const scan of await this.latestScans()) {
-      for (let start = 0; ; start += PAGE) {
-        const issues = (await this.graphql(ISSUES_QUERY, { id: scan.id, start, count: PAGE })).scan?.issues ?? [];
-        for (const issue of issues) {
-          yield toFinding(issue, { scan });
-          if (++count >= this.maxFindings) return;
-        }
-        if (issues.length < PAGE) break;
-      }
+  /** One unit per site's latest scan, several read at once. */
+  async units() {
+    return (await this.latestScans()).map((scan) => ({ key: scan.id, scan }));
+  }
+
+  async *unitFindings({ scan }) {
+    for (let start = 0; ; start += PAGE) {
+      const issues = (await this.graphql(ISSUES_QUERY, { id: scan.id, start, count: PAGE })).scan?.issues ?? [];
+      for (const issue of issues) yield toFinding(issue, { scan });
+      if (issues.length < PAGE) return;
     }
   }
 }

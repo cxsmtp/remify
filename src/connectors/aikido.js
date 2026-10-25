@@ -1,11 +1,3 @@
-/**
- * Aikido: every issue type it finds (open source, SAST, secrets, IaC,
- * containers, cloud, surface monitoring/DAST), from one export.
- *
- *   POST /api/oauth/token                    Basic clientId:clientSecret, client credentials
- *   GET  /api/public/v1/issues/export        every issue, one array
- */
-
 import { Connector } from '../connector.js';
 import { request } from '../http.js';
 import { makeFinding } from '../finding.js';
@@ -61,15 +53,12 @@ export class AikidoConnector extends Connector {
   static label = 'Aikido';
   static required = ['clientId', 'clientSecret'];
 
-  #token = null;
-  #expiresAt = 0;
-
   get base() {
     return String(this.config.url || 'https://app.aikido.dev').replace(/\/+$/, '');
   }
 
   async authHeaders() {
-    if (!this.#token || Date.now() >= this.#expiresAt) {
+    const token = await this.token(async () => {
       const basic = Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString('base64');
       const answer = await request(this.label, `${this.base}/api/oauth/token`, {
         method: 'POST',
@@ -78,10 +67,9 @@ export class AikidoConnector extends Connector {
         fetchImpl: this.fetchImpl,
       });
       if (!answer?.access_token) throw new Error('Aikido gave no access token for this client.');
-      this.#token = answer.access_token;
-      this.#expiresAt = Date.now() + Number(answer.expires_in ?? 3600) * 1000 - 60_000;
-    }
-    return { Authorization: `Bearer ${this.#token}` };
+      return { value: answer.access_token, expiresInMs: Number(answer.expires_in ?? 3600) * 1000 };
+    });
+    return { Authorization: `Bearer ${token}` };
   }
 
   async check() {
@@ -89,12 +77,9 @@ export class AikidoConnector extends Connector {
     return 'token issued';
   }
 
-  async *findings() {
+  /** The export is one call: one unit. */
+  async *unitFindings() {
     const issues = await this.call(`${this.base}/api/public/v1/issues/export`, { query: this.config.includeClosed ? {} : { filter_status: 'open' } });
-    let count = 0;
-    for (const issue of Array.isArray(issues) ? issues : issues?.issues ?? []) {
-      yield toFinding(issue);
-      if (++count >= this.maxFindings) return;
-    }
+    for (const issue of Array.isArray(issues) ? issues : issues?.issues ?? []) yield toFinding(issue);
   }
 }

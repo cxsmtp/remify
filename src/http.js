@@ -1,9 +1,3 @@
-/**
- * The one way connectors talk to an engine: fetch with a timeout, retries on
- * the answers that mean "try again", and errors that name the engine, the
- * host and the reason in one sentence.
- */
-
 const RETRYABLE = new Set([429, 502, 503, 504]);
 const REQUEST_TIMEOUT_MS = Math.max(5_000, Number(process.env.REMIFY_REQUEST_TIMEOUT_MS) || 60_000);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
