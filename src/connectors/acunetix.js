@@ -1,15 +1,6 @@
-/**
- * Acunetix (DAST), API v1.
- *
- *   GET {url}/api/v1/me                      proves the key (`X-Auth`)
- *   GET {url}/api/v1/vulnerabilities         cursor pages (pagination.next_cursor), open ones unless includeClosed
- *   GET {url}/api/v1/vulnerabilities/{id}    description, impact, recommendation, request: read when withDetails
- *
- * Acunetix severities are numbers: 4 critical, 3 high, 2 medium, 1 low, 0 info.
- */
-
 import { Connector } from '../connector.js';
 import { makeFinding, parseCwe } from '../finding.js';
+import { mapPool } from '../pool.js';
 
 const PAGE = 100;
 const SEVERITY = { 4: 'critical', 3: 'high', 2: 'medium', 1: 'low', 0: 'info' };
@@ -54,17 +45,17 @@ export class AcunetixConnector extends Connector {
     return me?.email ? `signed in as ${me.email}` : 'key accepted';
   }
 
-  async *findings() {
+  /** One cursor walk, one unit; with withDetails, each page's details are read at once. */
+  async *unitFindings() {
     const q = this.config.includeClosed ? undefined : 'status:open';
     let cursor;
-    let count = 0;
     for (;;) {
       const page = await this.call(`${this.base}/vulnerabilities`, { query: { l: PAGE, c: cursor, q } });
-      for (const vuln of page?.vulnerabilities ?? []) {
-        const details = this.config.withDetails ? (await this.call(`${this.base}/vulnerabilities/${encodeURIComponent(vuln.vuln_id)}`)) ?? {} : {};
-        yield toFinding(vuln, details);
-        if (++count >= this.maxFindings) return;
-      }
+      const vulns = page?.vulnerabilities ?? [];
+      const details = this.config.withDetails
+        ? await mapPool(vulns, this.concurrency, async (vuln) => (await this.call(`${this.base}/vulnerabilities/${encodeURIComponent(vuln.vuln_id)}`)) ?? {})
+        : [];
+      for (const [i, vuln] of vulns.entries()) yield toFinding(vuln, details[i] ?? {});
       cursor = page?.pagination?.next_cursor;
       if (!cursor) return;
     }

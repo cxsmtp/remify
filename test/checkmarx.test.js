@@ -73,7 +73,8 @@ test('findings() signs in once and reads every project\'s latest scan, every pag
   assert.equal(findings.length, 203);
   assert.equal(calls.filter((c) => c.method === 'POST').length, 1);
   const results = calls.filter((c) => c.url.pathname === '/api/results/');
-  assert.deepEqual(results.map((c) => c.url.searchParams.get('offset')), ['0', '1']);
+  // Page 0 alone; it is full, so four more at once; the short page 1 ends it, and the pages past it are dropped.
+  assert.deepEqual(results.map((c) => c.url.searchParams.get('offset')), ['0', '1', '2', '3', '4']);
   assert.equal(results[0].init.headers.Authorization, 'Bearer tok');
   assert.equal(results[0].init.headers.Accept, 'application/json; version=1.0');
 });

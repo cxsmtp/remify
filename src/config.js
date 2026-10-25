@@ -1,12 +1,3 @@
-/**
- * One file connects every engine a customer has: remify.config.json, one block
- * per engine, secrets as ${ENV_VAR} so the file itself holds none. An engine
- * that is not in the file is simply not connected; whichever mix a customer
- * runs is the mix remify reads.
- *
- *   { "engines": { "checkmarx": { "apiKey": "${CX_API_KEY}" }, "snyk": { "token": "${SNYK_TOKEN}" } } }
- */
-
 import fs from 'node:fs';
 import { ENGINES } from './engines.js';
 

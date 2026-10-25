@@ -1,10 +1,3 @@
-/**
- * GET /api/results rows shaped like real Checkmarx One findings: the SSRF,
- * the secret and the duplicated "Missing Authentication" critical are taken
- * from a real scan of CxDetectionDateBaseReminder (values trimmed; the secret
- * stays redacted as Checkmarx One gives it).
- */
-
 export const ssrf = {
   type: 'sast',
   id: 'I1ZRUsG8QTqktyAPlZSWsQQn+sc=',

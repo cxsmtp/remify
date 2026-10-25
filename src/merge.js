@@ -1,23 +1,3 @@
-/**
- * The same gap, reported by several engines (or several times by one), merged
- * into one issue. This is where credits are saved: triage and remediation act
- * on a merged issue once, not on every report of it. An issue more than one
- * engine reports is "corroborated", the first signal for the analysis step.
- *
- * What makes two findings the same gap depends on its kind:
- *   code (SAST)       file + line + CWE (the title when there is no CWE)
- *   secret, IaC       file + line
- *   package (SCA,     package + version + CVE (the title when there is no CVE)
- *     container)
- *   DAST              host + path + parameter + CWE (or title)
- *   cloud             resource + CVE (or title)
- *
- * Engines name repositories and images differently, so the asset is not in
- * the key. Findings with a key in common are split by asset afterwards only
- * when both name one and the names differ; a finding that names none joins
- * the group it matches.
- */
-
 import { worstSeverity } from './finding.js';
 
 const lower = (value) => (value === null || value === undefined ? '' : String(value).trim().toLowerCase());

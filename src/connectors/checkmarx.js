@@ -1,28 +1,14 @@
-/**
- * Checkmarx One: SAST, SCA, IaC (KICS), containers and secrets, from each
- * project's latest completed scan.
- *
- * The API key is a JWT whose `iss` claim names the tenant's realm (e.g.
- * https://eu.iam.checkmarx.net/auth/realms/acme), so the key alone gives the
- * IAM host, the tenant and the API host (iam → ast). It is exchanged for an
- * access token with the refresh-token grant and the public `ast-app` client,
- * as Mission Zero does.
- *
- *   GET /api/projects                       offset/limit, { projects, totalCount }
- *   GET /api/projects/last-scan             { [projectId]: scan }
- *   GET /api/results/?scan-id=              offset is a PAGE number; a short page ends it
- *
- * Checkmarx One runs AI Triage (1 credit) and AI Remediation (3 credits) itself.
- */
-
 import { Connector } from '../connector.js';
 import { request } from '../http.js';
 import { makeFinding } from '../finding.js';
+import { countedPages, mapPool, numberedPages } from '../pool.js';
 
 const ACCEPT = 'application/json; version=1.0';
 const PROJECT_PAGE = 100;
 const RESULTS_PAGE = 200;
 const LAST_SCAN_CHUNK = 50;
+// Result pages of one scan asked for at once.
+const RESULTS_AHEAD = 4;
 const EXPIRY_SKEW_MS = 30_000;
 
 /** The routing claims of an API key; null when it is not a JWT. */
@@ -130,8 +116,6 @@ export class CheckmarxConnector extends Connector {
   static nativeActions = ['triage', 'remediate'];
 
   #connection = null;
-  #token = null;
-  #expiresAt = 0;
 
   get connection() {
     this.#connection ??= deriveConnection(this.config.apiKey, this.config);
@@ -139,7 +123,7 @@ export class CheckmarxConnector extends Connector {
   }
 
   async authHeaders() {
-    if (!this.#token || Date.now() >= this.#expiresAt) {
+    const token = await this.token(async () => {
       const answer = await request(this.label, this.connection.tokenUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -147,10 +131,9 @@ export class CheckmarxConnector extends Connector {
         fetchImpl: this.fetchImpl,
       });
       if (!answer?.access_token) throw new Error('Checkmarx One gave no access token for this API key.');
-      this.#token = answer.access_token;
-      this.#expiresAt = Date.now() + Number(answer.expires_in ?? 300) * 1000 - EXPIRY_SKEW_MS;
-    }
-    return { Authorization: `Bearer ${this.#token}`, Accept: ACCEPT };
+      return { value: answer.access_token, expiresInMs: Number(answer.expires_in ?? 300) * 1000 + 60_000 - EXPIRY_SKEW_MS };
+    });
+    return { Authorization: `Bearer ${token}`, Accept: ACCEPT };
   }
 
   api(path) {
@@ -162,53 +145,55 @@ export class CheckmarxConnector extends Connector {
     return `tenant ${this.connection.tenant}, ${page?.totalCount ?? page?.projects?.length ?? 0} projects`;
   }
 
-  /** Every project, or only those named in config.projects. */
-  async *projects() {
+  /** Every project, or only those named in config.projects: the first page gives the total, the rest are read at once. */
+  async projects() {
     const wanted = new Set([].concat(this.config.projects ?? []).map(String));
-    for (let offset = 0; ; offset += PROJECT_PAGE) {
-      const page = await this.call(this.api('/api/projects'), { query: { offset, limit: PROJECT_PAGE } });
-      const projects = page?.projects ?? [];
-      for (const project of projects) {
-        if (wanted.size && !wanted.has(project.name) && !wanted.has(project.id)) continue;
-        yield project;
-      }
-      if (projects.length < PROJECT_PAGE) return;
+    const projects = [];
+    const pages = countedPages(
+      async (offset) => {
+        const page = await this.call(this.api('/api/projects'), { query: { offset, limit: PROJECT_PAGE } });
+        return { rows: page?.projects ?? [], total: page?.filteredTotalCount ?? page?.totalCount };
+      },
+      { pageSize: PROJECT_PAGE, limit: this.concurrency },
+    );
+    for await (const project of pages) {
+      if (wanted.size && !wanted.has(project.name) && !wanted.has(project.id)) continue;
+      projects.push(project);
     }
+    return projects;
   }
 
+  /** Each project's latest completed scan, chunks of project ids asked for at once. */
   async lastScans(projectIds) {
+    const chunks = [];
+    for (let i = 0; i < projectIds.length; i += LAST_SCAN_CHUNK) chunks.push(projectIds.slice(i, i + LAST_SCAN_CHUNK));
+    const answers = await mapPool(chunks, this.concurrency, (ids) =>
+      this.call(this.api('/api/projects/last-scan'), { query: { 'project-ids': ids, 'scan-status': 'Completed' } }),
+    );
     const scans = {};
-    for (let i = 0; i < projectIds.length; i += LAST_SCAN_CHUNK) {
-      const ids = projectIds.slice(i, i + LAST_SCAN_CHUNK);
-      const answer = await this.call(this.api('/api/projects/last-scan'), { query: { 'project-ids': ids, 'scan-status': 'Completed' } });
+    for (const answer of answers) {
       for (const [id, scan] of Object.entries(answer ?? {})) if (scan && typeof scan === 'object') scans[id] = scan;
     }
     return scans;
   }
 
-  async *scanResults(scanId) {
-    for (let page = 0; ; page += 1) {
-      const answer = await this.call(this.api('/api/results/'), { query: { 'scan-id': scanId, limit: RESULTS_PAGE, offset: page } });
-      const rows = answer?.results ?? [];
-      yield* rows;
-      if (rows.length < RESULTS_PAGE) return;
-    }
+  /** One unit per project with a completed scan, keyed by its scan: a new scan is a new unit. */
+  async units() {
+    const projects = await this.projects();
+    const scans = await this.lastScans(projects.map((p) => p.id));
+    return projects.filter((p) => scans[p.id]?.id).map((project) => ({ key: `${project.id}:${scans[project.id].id}`, project, scan: scans[project.id] }));
   }
 
-  async *findings() {
-    const projects = [];
-    for await (const project of this.projects()) projects.push(project);
-    const scans = await this.lastScans(projects.map((p) => p.id));
+  async *unitFindings({ project, scan }) {
     const types = new Set([].concat(this.config.engines ?? []));
-    let count = 0;
-    for (const project of projects) {
-      const scan = scans[project.id];
-      if (!scan?.id) continue;
-      for await (const row of this.scanResults(scan.id)) {
-        if (types.size && !types.has(row.type)) continue;
-        yield toFinding(row, { project, scan });
-        if (++count >= this.maxFindings) return;
-      }
+    // /api/results numbers pages rather than rows and its totalCount is not reliable: pages are read a few ahead.
+    const rows = numberedPages(
+      async (page) => (await this.call(this.api('/api/results/'), { query: { 'scan-id': scan.id, limit: RESULTS_PAGE, offset: page } }))?.results ?? [],
+      { pageSize: RESULTS_PAGE, ahead: RESULTS_AHEAD },
+    );
+    for await (const row of rows) {
+      if (types.size && !types.has(row.type)) continue;
+      yield toFinding(row, { project, scan });
     }
   }
 }

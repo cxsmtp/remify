@@ -1,15 +1,3 @@
-/**
- * Mend.io (SCA): security findings of every project's dependencies, API 3.0.
- *
- *   POST /api/v3.0/login                     { email, userKey, orgUuid } → refreshToken
- *   POST /api/v3.0/login/accessToken         `wss-refresh-token` → jwtToken
- *   GET  /api/v3.0/orgs/{orgUuid}/projects
- *   GET  /api/v3.0/projects/{uuid}/dependencies/findings/security
- *
- * Pages follow additionalData.paging.next when the answer gives it, else a
- * numeric cursor until a short page. Mend SAST (code findings) is not read yet.
- */
-
 import { Connector } from '../connector.js';
 import { request } from '../http.js';
 import { makeFinding, normalizeSeverity, severityFromScore } from '../finding.js';
@@ -52,15 +40,12 @@ export class MendConnector extends Connector {
   static label = 'Mend.io';
   static required = ['email', 'userKey', 'orgUuid'];
 
-  #jwt = null;
-  #expiresAt = 0;
-
   get base() {
     return String(this.config.url || 'https://api-saas.mend.io').replace(/\/+$/, '');
   }
 
   async authHeaders() {
-    if (!this.#jwt || Date.now() >= this.#expiresAt) {
+    const jwt = await this.token(async () => {
       const login = await request(this.label, `${this.base}/api/v3.0/login`, {
         method: 'POST',
         body: { email: this.config.email, userKey: this.config.userKey, orgUuid: this.config.orgUuid },
@@ -74,10 +59,9 @@ export class MendConnector extends Connector {
         fetchImpl: this.fetchImpl,
       });
       if (!access?.retVal?.jwtToken) throw new Error('Mend.io gave no access token.');
-      this.#jwt = access.retVal.jwtToken;
-      this.#expiresAt = Date.now() + Number(access.retVal.jwtTTL ?? 1_800_000) - 60_000;
-    }
-    return { Authorization: `Bearer ${this.#jwt}` };
+      return { value: access.retVal.jwtToken, expiresInMs: Number(access.retVal.jwtTTL ?? 1_800_000) };
+    });
+    return { Authorization: `Bearer ${jwt}` };
   }
 
   async *pages(url) {
@@ -105,15 +89,19 @@ export class MendConnector extends Connector {
     return `org ${this.config.orgUuid}, ${page?.additionalData?.totalItems ?? page?.retVal?.length ?? 0} projects`;
   }
 
-  async *findings() {
+  /** One unit per project, several read at once. */
+  async units() {
     const wanted = new Set([].concat(this.config.projects ?? []));
-    let count = 0;
+    const units = [];
     for await (const project of this.pages(`${this.base}/api/v3.0/orgs/${encodeURIComponent(this.config.orgUuid)}/projects`)) {
-      if (wanted.size && !wanted.has(project.name) && !wanted.has(project.uuid)) continue;
-      for await (const row of this.pages(`${this.base}/api/v3.0/projects/${encodeURIComponent(project.uuid)}/dependencies/findings/security`)) {
-        yield toFinding(row, { project });
-        if (++count >= this.maxFindings) return;
-      }
+      if (!wanted.size || wanted.has(project.name) || wanted.has(project.uuid)) units.push({ key: project.uuid, project });
+    }
+    return units;
+  }
+
+  async *unitFindings({ project }) {
+    for await (const row of this.pages(`${this.base}/api/v3.0/projects/${encodeURIComponent(project.uuid)}/dependencies/findings/security`)) {
+      yield toFinding(row, { project });
     }
   }
 }

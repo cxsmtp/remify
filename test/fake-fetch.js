@@ -1,9 +1,3 @@
-/**
- * A fetch stand-in for connector tests: answers from a list of routes and
- * records every call. A route is [method, path pattern, answer], where answer
- * is a value (sent as JSON) or a function of (url, init) returning one, or
- * { status, body } for an error.
- */
 export function fakeFetch(routes) {
   const calls = [];
   const fetchImpl = async (target, init = {}) => {

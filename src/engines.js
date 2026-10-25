@@ -1,8 +1,3 @@
-/**
- * Every engine remify can connect to, by its config key. Adding an engine is
- * one connector file and one line here.
- */
-
 import { CheckmarxConnector } from './connectors/checkmarx.js';
 import { SnykConnector } from './connectors/snyk.js';
 import { BlackDuckConnector } from './connectors/blackduck.js';

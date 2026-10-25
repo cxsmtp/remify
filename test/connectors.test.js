@@ -1,8 +1,3 @@
-/**
- * The connectors not yet tried against a live account: each one's mapping on a
- * sample row shaped like its vendor's documented answer, and its sign-in and
- * paging against a fake API.
- */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fakeFetch, collect } from './fake-fetch.js';
