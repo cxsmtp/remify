@@ -1,0 +1,16 @@
+{
+  "name": "remify",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One command center over every AppSec engine: connect them all in one go, fetch their findings into one shape, merge the duplicates, then triage and fix.",
+  "type": "module",
+  "bin": {
+    "remify": "src/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

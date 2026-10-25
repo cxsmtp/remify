@@ -1,0 +1,13 @@
+{
+  "engines": {
+    "checkmarx": { "apiKey": "${CX_API_KEY}" },
+    "snyk": { "token": "${SNYK_TOKEN}", "region": "us" },
+    "blackduck": { "url": "https://blackduck.example.com", "token": "${BLACKDUCK_TOKEN}", "latestVersionOnly": true },
+    "mend": { "url": "https://api-saas.mend.io", "email": "${MEND_EMAIL}", "userKey": "${MEND_USER_KEY}", "orgUuid": "${MEND_ORG_UUID}" },
+    "wiz": { "clientId": "${WIZ_CLIENT_ID}", "clientSecret": "${WIZ_CLIENT_SECRET}", "apiUrl": "https://api.us17.app.wiz.io/graphql" },
+    "aikido": { "clientId": "${AIKIDO_CLIENT_ID}", "clientSecret": "${AIKIDO_CLIENT_SECRET}" },
+    "appscan": { "url": "https://cloud.appscan.com", "keyId": "${APPSCAN_KEY_ID}", "keySecret": "${APPSCAN_KEY_SECRET}" },
+    "burp": { "url": "https://burp.example.com", "apiKey": "${BURP_API_KEY}" },
+    "acunetix": { "url": "https://acunetix.example.com:3443", "apiKey": "${ACUNETIX_API_KEY}", "withDetails": true }
+  }
+}
